@@ -3,10 +3,12 @@ from typing import Iterable, List, Optional, Tuple, Dict
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
 import os
-import matplotlib.pyplot as plt
 from statsmodels.tsa.stattools import adfuller
+
+# yfinance and matplotlib are imported lazily (inside fetch_prices and the
+# plotting branch) so the engine can be imported and unit-tested on injected
+# synthetic data with no network or GUI dependency.
 
 
 def fetch_prices(
@@ -15,6 +17,8 @@ def fetch_prices(
     end: str,
 ) -> pd.DataFrame:
     """Fetch close prices for tickers between start and end (YYYY-MM-DD)."""
+    import yfinance as yf
+
     if isinstance(tickers, str):
         tickers = [tickers]
     df = yf.download(list(tickers), start=start, end=end, progress=False)["Close"]
@@ -36,6 +40,35 @@ def ols_hedge_ratio(s1: pd.Series, s2: pd.Series) -> float:
     if not np.isfinite(beta):
         beta = 1.0
     return float(beta)
+
+
+def half_life(spread: pd.Series) -> float:
+    """Ornstein-Uhlenbeck half-life of mean reversion, in bars (trading days).
+
+    Fits the discrete OU relation  d(spread)_t = a + lambda * spread_{t-1} + e_t
+    by OLS. For a mean-reverting series lambda < 0 and the half-life - the time
+    to close half the gap to the mean - is -ln(2) / lambda. A non-reverting
+    series (lambda >= 0) returns inf. The half-life justifies the trading
+    lookback and expected holding horizon: entries should be held on the order
+    of one half-life, and a lookback far shorter than it cannot see the
+    reversion.
+    """
+    s = pd.Series(spread).dropna().astype(float)
+    if len(s) < 10:
+        return float("nan")
+    lag = s.shift(1)
+    delta = s - lag
+    frame = pd.concat([delta, lag], axis=1).dropna()
+    delta_v = frame.iloc[:, 0].values
+    lag_v = frame.iloc[:, 1].values
+    X = np.column_stack([np.ones(len(lag_v)), lag_v])
+    try:
+        lam = np.linalg.lstsq(X, delta_v, rcond=None)[0][1]
+    except Exception:
+        return float("nan")
+    if lam >= 0 or not np.isfinite(lam):
+        return float("inf")
+    return float(-np.log(2.0) / lam)
 
 
 @dataclass
@@ -114,6 +147,9 @@ class BacktestResult:
     max_dd: float
     trades: int
     df: pd.DataFrame
+    half_life: float = float("nan")        # OU half-life of the training spread (bars)
+    bench_total_return: float = float("nan")  # equal-weight buy-hold of the pair, OOS
+    bench_sharpe: float = float("nan")
 
 
 def _zscore(x: pd.Series, mu: float, sd: float) -> pd.Series:
@@ -138,6 +174,7 @@ def backtest_pair_one_year(
     max_units: int = 5,
     debug: bool = False,
     ignore_adf: bool = False,
+    panel: Optional[pd.DataFrame] = None,
 ) -> BacktestResult:
     """Train on lookback ending at split_date, then test next ~252 BDays.
 
@@ -151,7 +188,8 @@ def backtest_pair_one_year(
     train_start = (split - pd.DateOffset(years=lookback_years)).date().isoformat()
     test_end = pd.to_datetime(end_date) if end_date else (split + pd.tseries.offsets.BDay(252))
 
-    panel = fetch_prices([s1, s2], start=train_start, end=test_end.date().isoformat())
+    if panel is None:
+        panel = fetch_prices([s1, s2], start=train_start, end=test_end.date().isoformat())
     s1_all = panel[s1].dropna()
     s2_all = panel[s2].dropna()
     common = s1_all.index.intersection(s2_all.index)
@@ -177,6 +215,12 @@ def backtest_pair_one_year(
         return float(beta_loc), mu_loc, sd_loc, active, p_val
 
     beta, mu, sd, active, p_val = _calibrate(split)
+
+    # Half-life of mean reversion on the initial training spread (justifies the
+    # lookback / expected holding horizon). Uses only in-sample data.
+    _win_start = max(pd.to_datetime(train_start), split - pd.DateOffset(years=lookback_years))
+    _spread_train = (s1_all.loc[_win_start:split] - beta * s2_all.loc[_win_start:split]).dropna()
+    hl = half_life(_spread_train)
 
     # Out-of-sample window (next ~252 BDays)
     test_idx = s1_all.index[s1_all.index > split]
@@ -294,8 +338,19 @@ def backtest_pair_one_year(
     max_dd = float(dd.min())
     ann_return = float((1.0 + total_return) ** (252.0 / max(len(rets_arr), 1)) - 1.0)
 
+    # Passive benchmark: equal-weight buy-and-hold of the two legs over the OOS
+    # window. The strategy is market-neutral, so the honest comparison is
+    # risk-adjusted (Sharpe) and whether the neutral book added value beyond
+    # simply holding the names.
+    bench_ret = 0.5 * (r1 + r2)
+    bench_eq = (1.0 + bench_ret).cumprod()
+    bench_total = float(bench_eq.iloc[-1] - 1.0) if len(bench_eq) else float("nan")
+    bench_sd = float(bench_ret.std(ddof=1)) if len(bench_ret) > 1 else 0.0
+    bench_sharpe = (float(bench_ret.mean()) / bench_sd) * np.sqrt(252.0) if bench_sd > 0 else 0.0
+
     # Plotting (optional) similar to in-sample strategy
     if Graphs == "Y":
+        import matplotlib.pyplot as plt
         try:
             fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
             # Z-score with signals
@@ -409,6 +464,9 @@ def backtest_pair_one_year(
         max_dd=max_dd,
         trades=trades,
         df=df,
+        half_life=hl,
+        bench_total_return=bench_total,
+        bench_sharpe=bench_sharpe,
     )
 
 
@@ -468,8 +526,9 @@ def backtest_all_pairs_one_year(
             )
             results.append((pc, res))
             print(
-                f"{i:02d}. {pc.s1}/{pc.s2} | p={pc.pvalue:.4f} | total={res.total_return:.2%} | "
-                f"ann={res.ann_return:.2%} | sharpe={res.sharpe:.2f} | maxDD={res.max_dd:.2%} | trades={res.trades}"
+                f"{i:02d}. {pc.s1}/{pc.s2} | p={pc.pvalue:.4f} | half-life={res.half_life:.0f}d | "
+                f"total={res.total_return:.2%} (bench {res.bench_total_return:.2%}) | ann={res.ann_return:.2%} | "
+                f"sharpe={res.sharpe:.2f} (bench {res.bench_sharpe:.2f}) | maxDD={res.max_dd:.2%} | trades={res.trades}"
             )
         except Exception as exc:
             print(f"{i:02d}. {pc.s1}/{pc.s2} | ERROR during OOS backtest: {exc}")

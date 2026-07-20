@@ -22,8 +22,18 @@ The engine (`Backtesting.py`) implements a proper Engle-Granger workflow:
   hedge ratio and residual stats are re-estimated on the trailing window and the
   ADF test is re-run; if the pair fails cointegration out of sample, trading is
   disabled for that period.
+- **Half-life of mean reversion** — the Ornstein-Uhlenbeck half-life of the
+  training spread is estimated (`half_life()`) and reported per pair, to justify
+  the lookback and the expected holding horizon: a lookback far shorter than the
+  half-life cannot see the reversion, and positions should be held on that order.
+- **Passive benchmark** — each pair's OOS result is shown against an equal-weight
+  buy-and-hold of the two legs (total return and Sharpe). The strategy is
+  market-neutral, so the honest question is whether it beat simply holding the
+  names on a risk-adjusted basis, net of costs.
 
-Transaction costs are charged on every unit change in position.
+Transaction costs are charged on every unit change in position. The default
+universe is hand-picked and so carries **survivorship bias** — it is a
+demonstration universe, not a bias-free backtest of a live selection rule.
 
 ## Run
 
@@ -35,8 +45,9 @@ python main.py
 
 `python main.py` drives the out-of-sample engine in `Backtesting.py`: it scans
 the universe for in-sample cointegrated pairs, then backtests each one on the
-forward (out-of-sample) window and prints total/annualised return, Sharpe, max
-drawdown, and trade count per pair. Plots are written to `charts/`.
+forward (out-of-sample) window and prints per pair the half-life, total/annualised
+return, Sharpe (each against the passive benchmark), max drawdown, and trade
+count. Plots are written to `charts/`.
 
 Useful flags:
 
@@ -47,6 +58,14 @@ python main.py --no-graphs                    # skip plotting
 ```
 
 Edit `tickers.txt` to change the default search universe.
+
+The engine is unit-tested offline (synthetic panels injected via `panel=`, no
+network) and the look-ahead demonstration below is reproducible:
+
+```bash
+python -m pytest tests/test_pairs.py -q       # incl. the look-ahead guard test
+python demo_lookahead.py                       # quantifies the v1 bias
+```
 
 ## Methodology note: how a look-ahead bug was caught
 
@@ -62,6 +81,25 @@ hedge ratio) on a training window only, evaluate on a forward window the model
 never saw, add a one-bar execution lag, and re-validate cointegration each
 quarter so a pair that decoheres stops trading. That rebuilt engine is what
 `Backtesting.py` / `python main.py` now runs.
+
+**How big was the bias?** `demo_lookahead.py` runs the *same* mean-reversion rule
+on synthetic spreads two ways — full-sample z (v1) vs causal trailing z (the
+current engine) — and measures the Sharpe each reports:
+
+```
+data / persistence  full-sample   trailing        inflation
+3.0y  phi=0.95            +2.20      +1.91       +0.29 (1.2x)
+2.0y  phi=0.97            +1.85      +1.40       +0.45 (1.3x)
+1.0y  phi=0.98            +1.82      +1.00       +0.81 (1.8x)
+0.6y  phi=0.98            +2.12      +0.90       +1.22 (2.4x)
+```
+
+The look-ahead Sharpe is unearnable in real time, and the gap widens as history
+shrinks and the spread gets more persistent — exactly the regime real pairs live
+in, where the inflation is 1.8x–2.4x. The lesson is not that the number was huge
+but that it was **invisible without the guard**: `tests/test_pairs.py::test_no_lookahead`
+now asserts the signal at time *t* is unchanged when prices after *t* are
+corrupted, so the bug cannot silently return.
 
 The flawed v1 is kept, quarantined and clearly labelled, at
 `legacy/pair_trader_v1_lookahead.py` — solely as the "before" side of this
