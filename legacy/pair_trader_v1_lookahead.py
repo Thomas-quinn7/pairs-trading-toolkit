@@ -1,3 +1,22 @@
+# ============================================================================
+# LEGACY / QUARANTINED - DO NOT USE FOR ANY REPORTED RESULT
+# ----------------------------------------------------------------------------
+# This is the FLAWED v1 pairs-trading engine. It is kept ONLY as the "before"
+# side of the Phase 3 falsification write-up (how a look-ahead bug was caught).
+#
+# Fatal defect: the z-score is normalised with the FULL-SAMPLE mean and std
+# (see moving_average_strategy: `z_score = (ratio - ratio.mean()) / ratio.std()`).
+# Every historical signal therefore "knows" the future distribution of the
+# spread -> classic look-ahead bias that invalidates every number this file
+# produces. It also trades the raw price ratio (not a beta-hedged spread) and
+# hand-tunes many magic-multiplier thresholds (curve-fitting).
+#
+# The correct, out-of-sample engine is Backtesting.py (Engle-Granger OLS hedge
+# ratio, ADF on the residual, train/test split, one-bar execution lag,
+# quarterly recalibration, OOS cointegration re-validation). Run that via
+# `python main.py`. Nothing in the active pipeline imports this module.
+# ============================================================================
+
 import pandas as pd
 from datetime import datetime
 import yfinance as yf

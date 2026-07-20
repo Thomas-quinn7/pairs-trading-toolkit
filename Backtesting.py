@@ -1,4 +1,3 @@
-import warnings
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Tuple, Dict
 
@@ -8,9 +7,6 @@ import yfinance as yf
 import os
 import matplotlib.pyplot as plt
 from statsmodels.tsa.stattools import adfuller
-
-
-warnings.filterwarnings("ignore")
 
 
 def fetch_prices(
