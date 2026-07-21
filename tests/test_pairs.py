@@ -71,13 +71,13 @@ def test_half_life_infinite_for_random_walk():
     assert B.half_life(rw) > 100  # no mean reversion -> very long / inf
 
 
-def test_adf_finds_cointegrated_pair():
+def test_engle_granger_finds_cointegrated_pair():
     panel = make_cointegrated_panel(seed=4)
     cands = B.scan_pairs_in_sample(panel, corr_threshold=0.5, stat_sig=0.05)
     assert any({c.s1, c.s2} == {"A", "B"} for c in cands)
 
 
-def test_adf_rejects_independent_random_walks():
+def test_engle_granger_rejects_independent_random_walks():
     rng = np.random.default_rng(5)
     idx = pd.bdate_range("2019-01-01", periods=600)
     x = 100 + np.cumsum(rng.standard_normal(600))

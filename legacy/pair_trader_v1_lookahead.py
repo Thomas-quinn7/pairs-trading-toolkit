@@ -12,7 +12,7 @@
 # hand-tunes many magic-multiplier thresholds (curve-fitting).
 #
 # The correct, out-of-sample engine is Backtesting.py (Engle-Granger OLS hedge
-# ratio, ADF on the residual, train/test split, one-bar execution lag,
+# ratio, Engle-Granger test on the spread, train/test split, one-bar execution lag,
 # quarterly recalibration, OOS cointegration re-validation). Run that via
 # `python main.py`. Nothing in the active pipeline imports this module.
 # ============================================================================
