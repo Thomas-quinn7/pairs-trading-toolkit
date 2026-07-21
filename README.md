@@ -117,7 +117,9 @@ corrupted, so the bug cannot silently return.
 
 The flawed v1 is kept, quarantined and clearly labelled, at
 `legacy/pair_trader_v1_lookahead.py` — solely as the "before" side of this
-write-up. Nothing in the active pipeline imports it.
+write-up. Nothing in the active pipeline imports it. Its chart output (and
+that of other retired engine versions) is archived under `legacy/charts/`;
+`charts/` holds only current-engine output.
 
 ## Portfolio layer (`--portfolio`)
 
