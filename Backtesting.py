@@ -354,30 +354,38 @@ def backtest_pair_one_year(
     # Plotting (optional) similar to in-sample strategy
     if Graphs == "Y":
         import matplotlib.pyplot as plt
+        import plotstyle as ps
         try:
+            ps.apply_style()
             fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
-            # Z-score with signals
-            ax1.plot(df.index, df["z"], label="Z-Score", alpha=0.8)
+            # Z-score with signals. Buy/sell are status semantics (reserved
+            # colors) and also differ by marker shape, so color is never the
+            # only channel.
+            ax1.plot(df.index, df["z"], color=ps.series_color(0), label="Z-score")
             buys = df[df["signal"] == 1]
             sells = df[df["signal"] == -1]
-            ax1.scatter(buys.index, buys["z"], color="green", marker="^", s=80, label="Buy/Close Short")
-            ax1.scatter(sells.index, sells["z"], color="red", marker="v", s=80, label="Sell/Close Long")
-            ax1.axhline(entry_z, color="red", linestyle="--", alpha=0.6)
-            ax1.axhline(-entry_z, color="green", linestyle="--", alpha=0.6)
-            ax1.axhline(exit_z, color="orange", linestyle=":", alpha=0.6)
-            ax1.axhline(-exit_z, color="orange", linestyle=":", alpha=0.6)
-            ax1.axhline(0, color="black", linestyle="-", alpha=0.4)
-            ax1.set_title(f"OOS Signals and Z-Score: {s1}/{s2}")
-            ax1.legend()
-            ax1.grid(True, alpha=0.3)
+            ax1.scatter(buys.index, buys["z"], color=ps.GOOD, marker="^", s=60,
+                        zorder=3, label="Buy / close short")
+            ax1.scatter(sells.index, sells["z"], color=ps.CRITICAL, marker="v", s=60,
+                        zorder=3, label="Sell / close long")
+            ax1.axhspan(-exit_z, exit_z, color=ps.GRID, alpha=0.5, label="Exit band")
+            ax1.axhline(entry_z, color=ps.MUTED, linestyle="--", linewidth=1.0)
+            ax1.axhline(-entry_z, color=ps.MUTED, linestyle="--", linewidth=1.0)
+            ax1.axhline(0, color=ps.BASELINE, linewidth=1.0)
+            ax1.set_title(f"OOS signals and z-score: {s1}/{s2}")
+            ax1.set_ylabel("Z-score")
+            ax1.legend(loc="best")
 
-            # Equity curve
-            ax2.plot(df.index, df["equity"], label="Equity", linewidth=2)
-            ax2.axhline(1.0, color="black", linestyle="--", alpha=0.5, label="Start")
-            ax2.set_title("Equity Curve (OOS)")
-            ax2.set_ylabel("Equity (normalized)")
-            ax2.grid(True, alpha=0.3)
-            ax2.legend()
+            # Equity curve vs the passive benchmark - the honest comparison,
+            # drawn on the same axis.
+            ax2.plot(df.index, df["equity"], color=ps.series_color(0),
+                     linewidth=2.2, label="Strategy")
+            ax2.plot(bench_eq.index, bench_eq, color=ps.series_color(1),
+                     linewidth=2.0, label="Equal-weight buy & hold")
+            ax2.axhline(1.0, color=ps.BASELINE, linestyle="--", linewidth=1.0)
+            ax2.set_title("Equity (OOS): strategy vs passive benchmark")
+            ax2.set_ylabel("Equity (normalised)")
+            ax2.legend(loc="best")
 
             plt.tight_layout()
             if save_plots:
@@ -393,8 +401,8 @@ def backtest_pair_one_year(
             try:
                 fig_dbg, (dx1, dx2, dx3) = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
                 # dx1: Z with ladder thresholds and no-trade band
-                dx1.plot(df.index, df["z"], label="Z-Score", color="steelblue", alpha=0.9)
-                dx1.axhspan(-exit_z, exit_z, color="orange", alpha=0.15, label="No-trade band")
+                dx1.plot(df.index, df["z"], label="Z-score", color=ps.series_color(0))
+                dx1.axhspan(-exit_z, exit_z, color=ps.GRID, alpha=0.5, label="No-trade band")
                 z_abs_max = float(np.nanmax(np.abs(df["z"].values))) if len(df) else entry_z
                 levels = []
                 lvl = float(entry_z)
@@ -402,18 +410,18 @@ def backtest_pair_one_year(
                     levels.append(lvl)
                     lvl += float(max(z_step, 1e-8))
                 for lvl in levels:
-                    dx1.axhline(lvl, color="red", linestyle="--", alpha=0.25)
-                    dx1.axhline(-lvl, color="green", linestyle="--", alpha=0.25)
-                dx1.axhline(0, color="black", linestyle="-", alpha=0.3)
-                dx1.set_ylabel("Z-Score")
-                dx1.set_title("Debug: Z with ladder thresholds")
-                dx1.grid(True, alpha=0.3)
+                    dx1.axhline(lvl, color=ps.MUTED, linestyle="--", alpha=0.4, linewidth=1.0)
+                    dx1.axhline(-lvl, color=ps.MUTED, linestyle="--", alpha=0.4, linewidth=1.0)
+                dx1.axhline(0, color=ps.BASELINE, linewidth=1.0)
+                dx1.set_ylabel("Z-score")
+                dx1.set_title("Debug: z-score with ladder thresholds")
                 dx1.legend(loc="upper right")
 
                 # dx2: Position units and inactive shading
                 pos = df["position"].fillna(0)
-                dx2.step(df.index, pos, where="post", label="Position (units)", color="purple")
-                dx2.axhline(0, color="black", linestyle="--", alpha=0.4)
+                dx2.step(df.index, pos, where="post", label="Position (units)",
+                         color=ps.series_color(6))
+                dx2.axhline(0, color=ps.BASELINE, linestyle="--", linewidth=1.0)
                 active_series_plot = df["active"].fillna(True)
                 inactive = (active_series_plot == False)
                 if inactive.any():
@@ -425,23 +433,23 @@ def backtest_pair_one_year(
                             in_seg = True
                             seg_start = t
                         elif not is_inactive and in_seg:
-                            dx2.axvspan(seg_start, t, color="grey", alpha=0.15, label="Inactive")
+                            dx2.axvspan(seg_start, t, color=ps.GRID, alpha=0.6, label="Inactive")
                             in_seg = False
                     if in_seg and seg_start is not None:
-                        dx2.axvspan(seg_start, idx[-1], color="grey", alpha=0.15)
+                        dx2.axvspan(seg_start, idx[-1], color=ps.GRID, alpha=0.6)
                 dx2.set_ylabel("Units")
-                dx2.set_title("Debug: Position units (inactive shaded)")
-                dx2.grid(True, alpha=0.3)
+                dx2.set_title("Debug: position units (inactive shaded)")
                 dx2.legend(loc="upper left")
 
                 # dx3: Engle-Granger p-values
                 pvals = df["eg_pvalue"]
-                dx3.plot(df.index, pvals, label="Engle-Granger p-value", color="brown", alpha=0.8)
-                dx3.axhline(stat_sig, color="black", linestyle="--", alpha=0.6, label=f"Threshold {stat_sig}")
+                dx3.plot(df.index, pvals, label="Engle-Granger p-value",
+                         color=ps.series_color(1))
+                dx3.axhline(stat_sig, color=ps.BASELINE, linestyle="--", linewidth=1.0,
+                            label=f"Threshold {stat_sig}")
                 dx3.set_yscale("log")
                 dx3.set_ylabel("p-value (log)")
                 dx3.set_title("Debug: Engle-Granger p-value at re-tests")
-                dx3.grid(True, which="both", alpha=0.3)
                 dx3.legend(loc="upper right")
 
                 plt.tight_layout()
