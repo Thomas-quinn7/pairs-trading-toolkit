@@ -123,7 +123,7 @@ write-up. Nothing in the active pipeline imports it.
 
 `python main.py --portfolio` combines the OOS daily return streams of every
 traded pair into one portfolio (`portfolio.py`), reporting total/annualised
-return, vol, Sharpe, and max drawdown for two weighting schemes, plus the
+return, vol, Sharpe, and max drawdown for three weighting schemes, plus the
 average pairwise correlation of the pair return streams (the diversification
 evidence). A combined equity/weights chart is written to
 `charts/pairs_portfolio_oos.png`.
@@ -134,14 +134,31 @@ evidence). A combined equity/weights chart is written to
   weight applied over bar *t* is known at the close of *t−1*, so the scheme is
   causal by construction. `tests/test_portfolio.py::test_weights_are_causal`
   guards this the same way `test_no_lookahead` guards the signal.
+- **max_sharpe** — **walk-forward Markowitz**: every 21 bars, long-only
+  max-Sharpe weights are refitted (SLSQP, weights in [0,1] summing to 1,
+  ridge-stabilised covariance) on the trailing 126 bars of pair returns
+  *ending at the previous bar*, then held until the next refit. Until enough
+  history exists the weights are 1/N.
 
-**Why not the legacy Markowitz max-Sharpe optimiser?** Optimising weights on
-the same out-of-sample window you then report is look-ahead at the *portfolio*
-level — a max-Sharpe weight vector fitted on the OOS returns "knows" which
-pairs did well over the window it is scored on. The legacy optimiser (SLSQP,
-efficient frontier, live `^IRX` risk-free rate) stays quarantined until it can
-be driven walk-forward: fit weights on a trailing window, apply them forward.
-That remains the roadmap item.
+**Why walk-forward matters:** fitting max-Sharpe weights on the same
+out-of-sample window you then report is look-ahead at the *portfolio* level —
+the weight vector "knows" which pairs did well over the window it is scored
+on. That is why the legacy optimiser stayed quarantined. The walk-forward
+version removes the leak: at every bar the weights are a pure function of
+past returns, guarded by
+`tests/test_portfolio.py::test_max_sharpe_weights_are_causal`. The risk-free
+rate is taken as zero because the pair books are self-financing long/short —
+the legacy module's live `^IRX` fetch belonged to its buy-and-hold display,
+not the weight fit.
+
+## Charts
+
+All charts share one style (`plotstyle.py`): a fixed-order categorical
+palette validated for colorblind safety (adjacent-pair CVD ΔE ≥ 8, normal
+vision ΔE ≥ 15 on the light surface), reserved status colors for buy/sell
+marks (which also differ by shape, so color is never the only channel),
+recessive hairline grids, and per-pair OOS charts that plot the strategy
+against its passive benchmark on the same axis.
 
 ### A worked example of why the strict screen matters
 

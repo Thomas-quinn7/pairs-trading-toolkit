@@ -17,7 +17,13 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from portfolio import combine_pair_returns, perf_stats, pair_returns_from_results  # noqa: E402
+from portfolio import (  # noqa: E402
+    combine_pair_returns,
+    max_sharpe_weights,
+    pair_returns_from_results,
+    perf_stats,
+    walk_forward_max_sharpe,
+)
 
 
 def make_returns_panel(seed=0, n=300, k=3):
@@ -29,7 +35,7 @@ def make_returns_panel(seed=0, n=300, k=3):
 
 def test_weights_sum_to_one_and_port_ret_is_weighted_sum():
     rets = make_returns_panel(seed=1)
-    for method in ("equal", "inverse_vol"):
+    for method in ("equal", "inverse_vol", "max_sharpe"):
         out = combine_pair_returns(rets, method=method)
         wcols = [c for c in out.columns if c.startswith("w_")]
         w = out[wcols]
@@ -69,6 +75,61 @@ def test_vol_floor_caps_flat_stream_weight():
     out = combine_pair_returns(rets, method="inverse_vol")
     assert np.isfinite(out["port_ret"]).all()
     assert (out[["w_P0", "w_P1"]].values <= 1.0 + 1e-9).all()
+
+
+def test_max_sharpe_weights_are_causal():
+    """Corrupting future returns must not change walk-forward weights up to
+    the cutoff — the Markowitz analogue of the signal-level look-ahead guard."""
+    rets = make_returns_panel(seed=5)
+    cutoff = rets.index[200]
+
+    w1 = walk_forward_max_sharpe(rets)
+    rets2 = rets.copy()
+    rets2.loc[rets2.index > cutoff] *= 25.0
+    w2 = walk_forward_max_sharpe(rets2)
+
+    up_to = w1.index <= cutoff
+    assert up_to.sum() > 50
+    assert np.allclose(w1.loc[up_to], w2.loc[up_to], atol=1e-12)
+
+
+def test_max_sharpe_prefers_the_better_stream():
+    """A stream with real drift and low vol should out-weight a pure-noise one."""
+    rng = np.random.default_rng(6)
+    idx = pd.bdate_range("2023-01-02", periods=400)
+    rets = pd.DataFrame({
+        "good": rng.normal(0.0010, 0.004, 400),
+        "noise": rng.normal(0.0000, 0.010, 400),
+    }, index=idx)
+    w = walk_forward_max_sharpe(rets, min_history=63)
+    post_warmup = w.iloc[100:]
+    assert post_warmup["good"].mean() > 0.7
+
+
+def test_max_sharpe_degenerate_inputs_fall_back_cleanly():
+    """Flat and collinear streams must yield finite, valid weights, not a crash."""
+    idx = pd.bdate_range("2023-01-02", periods=200)
+    flat = pd.DataFrame({"A": 0.0, "B": 0.0}, index=idx)
+    w = walk_forward_max_sharpe(flat)
+    assert np.isfinite(w.values).all()
+    assert np.allclose(w.sum(axis=1), 1.0, atol=1e-9)
+
+    rng = np.random.default_rng(7)
+    base = rng.normal(0.0004, 0.006, 200)
+    collinear = pd.DataFrame({"A": base, "B": base}, index=idx)  # singular cov
+    w2 = walk_forward_max_sharpe(collinear)
+    assert np.isfinite(w2.values).all()
+    assert np.allclose(w2.sum(axis=1), 1.0, atol=1e-9)
+    assert (w2.values >= -1e-9).all() and (w2.values <= 1.0 + 1e-9).all()
+
+
+def test_max_sharpe_single_fit_is_sane():
+    """Direct check of the one-window optimiser: bounds respected, sums to 1."""
+    rets = make_returns_panel(seed=8, n=150)
+    w = max_sharpe_weights(rets)
+    assert w.shape == (3,)
+    assert abs(w.sum() - 1.0) < 1e-6
+    assert (w >= -1e-9).all() and (w <= 1.0 + 1e-9).all()
 
 
 def test_perf_stats_known_values():
