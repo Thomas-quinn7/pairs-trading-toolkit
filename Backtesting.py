@@ -4,7 +4,7 @@ from typing import Iterable, List, Optional, Tuple, Dict
 import numpy as np
 import pandas as pd
 import os
-from statsmodels.tsa.stattools import adfuller
+from statsmodels.tsa.stattools import coint
 
 # yfinance and matplotlib are imported lazily (inside fetch_prices and the
 # plotting branch) so the engine can be imported and unit-tested on injected
@@ -87,8 +87,23 @@ def scan_pairs_in_sample(
 ) -> List[PairCandidate]:
     """Scan all pairs in the price panel and return cointegration candidates.
 
-    Uses ADF p-value on spread (s1 - beta*s2) and on ratio (s1/s2) and keeps the
-    best (lowest p-value) method that passes corr threshold and significance.
+    The spread (s1 - beta*s2) is tested with the Engle-Granger cointegration
+    test (``statsmodels.coint``), NOT a plain ADF on the residual: because beta
+    is *estimated* by OLS, standard Dickey-Fuller critical values are too
+    lenient (the fit makes the residual look more stationary than it is), and
+    Engle-Granger/MacKinnon critical values correct for that.
+
+    Only the spread is tested, because the spread is what the engine actually
+    trades and re-validates each quarter. (An earlier version also admitted
+    pairs on an ADF of the price *ratio*; such a pair could pass the screen yet
+    fail the spread test the engine gates on, and would then sit inactive for
+    the whole OOS window — screening on a statistic you do not trade is
+    incoherent.)
+
+    Note the screen tests many pairs at one significance level with no
+    multiple-testing correction: with N tickers there are N*(N-1)/2 tests, so
+    at stat_sig=0.01 roughly 1 in 100 non-cointegrated pairs will still slip
+    through by chance. The OOS re-validation is the backstop for that.
     """
     tickers = list(prices.columns)
     corr = prices.corr().abs()
@@ -106,28 +121,13 @@ def scan_pairs_in_sample(
             if len(s1) < 50:
                 continue
 
-            best_p = 1.0
-            best_method = ""
             beta = ols_hedge_ratio(s1, s2)
             try:
-                spread = s1 - beta * s2
-                p_spread = float(adfuller(spread.dropna(), maxlag=1, autolag="AIC")[1])
-                if p_spread < best_p:
-                    best_p = p_spread
-                    best_method = "spread"
+                p_spread = float(coint(s1, s2, maxlag=1, autolag="aic")[1])
             except Exception:
-                pass
-            try:
-                ratio = (s1 / s2).dropna()
-                p_ratio = float(adfuller(ratio, maxlag=1, autolag="AIC")[1])
-                if p_ratio < best_p:
-                    best_p = p_ratio
-                    best_method = "ratio"
-            except Exception:
-                pass
-
-            if best_method and best_p < stat_sig:
-                cands.append(PairCandidate(a, b, beta, best_p, best_method))
+                continue
+            if p_spread < stat_sig:
+                cands.append(PairCandidate(a, b, beta, p_spread, "spread"))
     # Sort by smallest p-value
     cands.sort(key=lambda x: x.pvalue)
     return cands
@@ -173,7 +173,7 @@ def backtest_pair_one_year(
     z_step: float = 0.5,
     max_units: int = 5,
     debug: bool = False,
-    ignore_adf: bool = False,
+    ignore_gate: bool = False,
     panel: Optional[pd.DataFrame] = None,
 ) -> BacktestResult:
     """Train on lookback ending at split_date, then test next ~252 BDays.
@@ -182,7 +182,7 @@ def backtest_pair_one_year(
     - One-bar execution delay: signals today are executed next bar.
     - Quarterly re-test/recalibration: each calendar quarter, re-estimate beta and
       residual mean/std on the trailing lookback window and disable trading if
-      cointegration test (ADF on residual) fails the threshold.
+      the Engle-Granger cointegration test fails the threshold.
     """
     split = pd.to_datetime(split_date)
     train_start = (split - pd.DateOffset(years=lookback_years)).date().isoformat()
@@ -208,7 +208,9 @@ def backtest_pair_one_year(
         active = True
         p_val = float("nan")
         try:
-            p_val = float(adfuller(spread_tr, maxlag=1, autolag="AIC")[1])
+            # Engle-Granger, not plain ADF: beta_loc is estimated, so DF
+            # critical values on the residual would be too lenient.
+            p_val = float(coint(s1_tr, s2_tr, maxlag=1, autolag="aic")[1])
             active = bool(p_val < stat_sig)
         except Exception:
             active = False
@@ -266,8 +268,8 @@ def backtest_pair_one_year(
         z_t = (spread_t - mu) / sd_eff
         z_series.append(float(z_t))
         beta_series.append(float(beta))
-        # Respect gating unless ignore_adf overrides it for analysis
-        is_active = True if ignore_adf else bool(active)
+        # Respect gating unless ignore_gate overrides it for analysis
+        is_active = True if ignore_gate else bool(active)
         active_series.append(is_active)
         pval_series.append(float(p_val) if p_val == p_val else np.nan)
 
@@ -320,10 +322,11 @@ def backtest_pair_one_year(
             "z": pd.Series(z_series, index=test_idx, dtype=float),
             "beta": pd.Series(beta_series, index=test_idx, dtype=float),
             "equity": pd.Series(eq_curve, index=test_idx, dtype=float),
+            "ret": pd.Series(rets, index=test_idx, dtype=float),
             "signal": pd.Series(signal_series, index=test_idx, dtype=int),
             "position": pd.Series(position_series, index=test_idx, dtype=int),
             "active": pd.Series(active_series, index=test_idx, dtype=bool),
-            "adf_pvalue": pd.Series(pval_series, index=test_idx, dtype=float),
+            "eg_pvalue": pd.Series(pval_series, index=test_idx, dtype=float),
         }
     )
 
@@ -431,13 +434,13 @@ def backtest_pair_one_year(
                 dx2.grid(True, alpha=0.3)
                 dx2.legend(loc="upper left")
 
-                # dx3: ADF p-values
-                pvals = df["adf_pvalue"]
-                dx3.plot(df.index, pvals, label="ADF p-value", color="brown", alpha=0.8)
+                # dx3: Engle-Granger p-values
+                pvals = df["eg_pvalue"]
+                dx3.plot(df.index, pvals, label="Engle-Granger p-value", color="brown", alpha=0.8)
                 dx3.axhline(stat_sig, color="black", linestyle="--", alpha=0.6, label=f"Threshold {stat_sig}")
                 dx3.set_yscale("log")
                 dx3.set_ylabel("p-value (log)")
-                dx3.set_title("Debug: ADF p-value at re-tests")
+                dx3.set_title("Debug: Engle-Granger p-value at re-tests")
                 dx3.grid(True, which="both", alpha=0.3)
                 dx3.legend(loc="upper right")
 
@@ -484,21 +487,38 @@ def backtest_all_pairs_one_year(
     z_step: float = 0.5,
     max_units: int = 5,
     debug: bool = True,
-    ignore_adf: bool = False,
+    ignore_gate: bool = False,
+    corr_threshold: float = 0.95,
+    stat_sig: float = 0.01,
 ) -> List[Tuple[PairCandidate, BacktestResult]]:
     """Scan all cointegrated pairs in-sample and OOS backtest each for ~1y.
 
     - In-sample window ends at split_date, length = lookback_years
-    - Pairs are filtered by correlation and ADF p-value via scan_pairs_in_sample
+    - Pairs are filtered by correlation and the Engle-Granger p-value via
+      scan_pairs_in_sample
     - For each passing pair, run backtest_pair_one_year on the forward window
     - Prints a concise summary per pair
+
+    If nothing passes the screen, the closest candidates (ranked by p-value)
+    are printed as diagnostics and an empty list is returned — an honest "no
+    trade" result, not an error.
     """
     split = pd.to_datetime(split_date)
     train_start = (split - pd.DateOffset(years=lookback_years)).date().isoformat()
     panel = fetch_prices(tickers, start=train_start, end=split_date)
-    cands = scan_pairs_in_sample(panel, corr_threshold=0.95, stat_sig=0.01)
+    cands = scan_pairs_in_sample(panel, corr_threshold=corr_threshold, stat_sig=stat_sig)
     if not cands:
-        raise RuntimeError("No cointegrated pairs found in-sample.")
+        near = scan_pairs_in_sample(panel, corr_threshold=corr_threshold, stat_sig=1.0)
+        print(f"\nNo pairs passed the in-sample screen "
+              f"(corr>={corr_threshold}, Engle-Granger p<{stat_sig}).")
+        if near:
+            print("Closest candidates (not significant):")
+            for pc in near[:5]:
+                print(f"  {pc.s1}/{pc.s2} | p={pc.pvalue:.4f} | beta={pc.beta:.3f}")
+        else:
+            print("No pair even met the correlation threshold; "
+                  "widen the universe or lower --corr-threshold.")
+        return []
 
     results: List[Tuple[PairCandidate, BacktestResult]] = []
     print("\n=== In-sample cointegrated pairs (to be OOS tested) ===")
@@ -517,12 +537,13 @@ def backtest_all_pairs_one_year(
                 exit_z=exit_z,
                 stop_z=stop_z,
                 tc=tc,
+                stat_sig=stat_sig,
                 Graphs=Graphs,
                 save_plots=save_plots,
                 z_step=z_step,
                 max_units=max_units,
                 debug=debug,
-                ignore_adf=ignore_adf,
+                ignore_gate=ignore_gate,
             )
             results.append((pc, res))
             print(
