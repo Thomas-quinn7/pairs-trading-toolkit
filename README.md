@@ -1,5 +1,7 @@
 # Pairs Trading Toolkit
 
+![tests](https://github.com/Thomas-quinn7/pairs-trading-toolkit/actions/workflows/tests.yml/badge.svg)
+
 A statistical-arbitrage toolkit that screens a universe of stocks for
 cointegrated pairs and backtests a mean-reversion spread strategy **out of
 sample** — trained on a lookback window and evaluated on data it never saw
