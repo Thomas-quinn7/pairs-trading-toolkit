@@ -150,6 +150,80 @@ class BacktestResult:
     half_life: float = float("nan")        # OU half-life of the training spread (bars)
     bench_total_return: float = float("nan")  # equal-weight buy-hold of the pair, OOS
     bench_sharpe: float = float("nan")
+    # Paired block-bootstrap of the realized OOS daily returns (see
+    # paired_block_bootstrap for what this does and does not tell you).
+    boot_return_p5: float = float("nan")
+    boot_return_p95: float = float("nan")
+    boot_sharpe_p5: float = float("nan")
+    boot_sharpe_p95: float = float("nan")
+    p_beat_bench: float = float("nan")
+
+
+def paired_block_bootstrap(
+    strat_rets,
+    bench_rets,
+    n_sims: int = 2000,
+    block_size: int = 5,
+    seed: int = 42,
+) -> Optional[Dict[str, float]]:
+    """Paired moving-block bootstrap of two daily return streams.
+
+    Resamples both series with the SAME block start indices, so every
+    simulated path is a like-for-like comparison of strategy vs benchmark on
+    an identical resampled calendar — P(strategy beats benchmark) is a paired
+    probability, not a comparison of two independently shuffled histories.
+    Blocks preserve autocorrelation up to ~block_size days.
+
+    Honest scope: this quantifies how sensitive the realized OOS result is to
+    the particular path it happened to take (sampling variability). It does
+    NOT detect overfitting or predict future performance — the resamples are
+    drawn from the same realized returns being judged. A CI straddling zero
+    means the headline number could plausibly be luck; a CI clear of zero
+    only means the result isn't an artifact of a few fat days.
+    """
+    strat = np.asarray(strat_rets, dtype=float)
+    bench = np.asarray(bench_rets, dtype=float)
+    n = min(len(strat), len(bench))
+    if n < 40:
+        return None
+    strat, bench = strat[:n], bench[:n]
+    block_size = max(1, min(block_size, n))
+    n_blocks = int(np.ceil(n / block_size))
+    max_start = n - block_size + 1
+
+    rng = np.random.default_rng(seed)
+    starts = rng.integers(0, max_start, size=(n_sims, n_blocks))
+
+    def _paths(x: np.ndarray) -> np.ndarray:
+        sim = np.empty((n_sims, n_blocks * block_size))
+        for off in range(block_size):
+            sim[:, off::block_size] = x[starts + off]
+        return sim[:, :n]
+
+    def _total(paths: np.ndarray) -> np.ndarray:
+        return np.prod(1.0 + paths, axis=1) - 1.0
+
+    def _sharpe(paths: np.ndarray) -> np.ndarray:
+        m = paths.mean(axis=1)
+        sd = paths.std(axis=1, ddof=1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            sh = (m / sd) * np.sqrt(252.0)
+        return np.where(sd > 0, sh, 0.0)
+
+    s_paths = _paths(strat)
+    b_paths = _paths(bench)
+    s_total = _total(s_paths)
+    s_sharpe = _sharpe(s_paths)
+
+    return {
+        "return_p5": float(np.percentile(s_total, 5)),
+        "return_p50": float(np.percentile(s_total, 50)),
+        "return_p95": float(np.percentile(s_total, 95)),
+        "sharpe_p5": float(np.percentile(s_sharpe, 5)),
+        "sharpe_p50": float(np.percentile(s_sharpe, 50)),
+        "sharpe_p95": float(np.percentile(s_sharpe, 95)),
+        "p_beat_bench": float((s_total > _total(b_paths)).mean()),
+    }
 
 
 def _zscore(x: pd.Series, mu: float, sd: float) -> pd.Series:
@@ -175,6 +249,8 @@ def backtest_pair_one_year(
     debug: bool = False,
     ignore_gate: bool = False,
     panel: Optional[pd.DataFrame] = None,
+    borrow_rate: float = 0.005,
+    financing_rate: float = 0.05,
 ) -> BacktestResult:
     """Train on lookback ending at split_date, then test next ~252 BDays.
 
@@ -183,6 +259,12 @@ def backtest_pair_one_year(
     - Quarterly re-test/recalibration: each calendar quarter, re-estimate beta and
       residual mean/std on the trailing lookback window and disable trading if
       the Engle-Granger cointegration test fails the threshold.
+    - Carry costs: the short leg pays an annualised stock-borrow fee
+      (borrow_rate, on short notional) and gross notional above 1.0x equity
+      pays margin financing (financing_rate). Without these, the multi-unit
+      ladder (max_units=5 is ~5x gross notional per unit of beta) runs on
+      free leverage and a free short leg — set both to 0.0 to reproduce the
+      old frictionless-carry numbers.
     """
     split = pd.to_datetime(split_date)
     train_start = (split - pd.DateOffset(years=lookback_years)).date().isoformat()
@@ -275,7 +357,18 @@ def backtest_pair_one_year(
 
         # PnL from yesterday's position (one-bar delay)
         gross_ret = (r1.loc[ts] - beta * r2.loc[ts]) if i > 0 else 0.0
-        ret = pos * float(gross_ret) - tc_carry
+
+        # Daily carry on the held position: borrow fee on the short leg's
+        # notional (long spread shorts beta units of s2; short spread shorts
+        # 1 unit of s1) plus margin financing on gross notional above equity.
+        carry = 0.0
+        if pos != 0 and i > 0:
+            short_notional = abs(pos) * (abs(beta) if pos > 0 else 1.0)
+            gross_notional = abs(pos) * (1.0 + abs(beta))
+            carry = (short_notional * borrow_rate
+                     + max(0.0, gross_notional - 1.0) * financing_rate) / 252.0
+
+        ret = pos * float(gross_ret) - tc_carry - carry
         eq *= (1.0 + ret)
         eq_curve.append(eq)
         rets.append(ret)
@@ -350,6 +443,10 @@ def backtest_pair_one_year(
     bench_total = float(bench_eq.iloc[-1] - 1.0) if len(bench_eq) else float("nan")
     bench_sd = float(bench_ret.std(ddof=1)) if len(bench_ret) > 1 else 0.0
     bench_sharpe = (float(bench_ret.mean()) / bench_sd) * np.sqrt(252.0) if bench_sd > 0 else 0.0
+
+    # Paired block bootstrap: how path-dependent is the realized OOS result,
+    # and how often does it beat the benchmark on identical resampled calendars?
+    boot = paired_block_bootstrap(rets_arr, bench_ret.values)
 
     # Plotting (optional) similar to in-sample strategy
     if Graphs == "Y":
@@ -478,6 +575,11 @@ def backtest_pair_one_year(
         half_life=hl,
         bench_total_return=bench_total,
         bench_sharpe=bench_sharpe,
+        boot_return_p5=boot["return_p5"] if boot else float("nan"),
+        boot_return_p95=boot["return_p95"] if boot else float("nan"),
+        boot_sharpe_p5=boot["sharpe_p5"] if boot else float("nan"),
+        boot_sharpe_p95=boot["sharpe_p95"] if boot else float("nan"),
+        p_beat_bench=boot["p_beat_bench"] if boot else float("nan"),
     )
 
 
@@ -498,6 +600,8 @@ def backtest_all_pairs_one_year(
     ignore_gate: bool = False,
     corr_threshold: float = 0.95,
     stat_sig: float = 0.01,
+    borrow_rate: float = 0.005,
+    financing_rate: float = 0.05,
 ) -> List[Tuple[PairCandidate, BacktestResult]]:
     """Scan all cointegrated pairs in-sample and OOS backtest each for ~1y.
 
@@ -552,6 +656,8 @@ def backtest_all_pairs_one_year(
                 max_units=max_units,
                 debug=debug,
                 ignore_gate=ignore_gate,
+                borrow_rate=borrow_rate,
+                financing_rate=financing_rate,
             )
             results.append((pc, res))
             print(
@@ -559,6 +665,13 @@ def backtest_all_pairs_one_year(
                 f"total={res.total_return:.2%} (bench {res.bench_total_return:.2%}) | ann={res.ann_return:.2%} | "
                 f"sharpe={res.sharpe:.2f} (bench {res.bench_sharpe:.2f}) | maxDD={res.max_dd:.2%} | trades={res.trades}"
             )
+            if np.isfinite(res.p_beat_bench):
+                print(
+                    f"    bootstrap (paired blocks): return 90% CI "
+                    f"[{res.boot_return_p5:.2%}, {res.boot_return_p95:.2%}] | "
+                    f"sharpe 90% CI [{res.boot_sharpe_p5:.2f}, {res.boot_sharpe_p95:.2f}] | "
+                    f"P(beats bench path) = {res.p_beat_bench:.1%}"
+                )
         except Exception as exc:
             print(f"{i:02d}. {pc.s1}/{pc.s2} | ERROR during OOS backtest: {exc}")
 

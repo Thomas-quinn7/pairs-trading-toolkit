@@ -39,6 +39,17 @@ The engine (`Backtesting.py`) implements a proper Engle-Granger workflow:
   buy-and-hold of the two legs (total return and Sharpe). The strategy is
   market-neutral, so the honest question is whether it beat simply holding the
   names on a risk-adjusted basis, net of costs.
+- **Paired block bootstrap** — the realized OOS daily returns of strategy and
+  benchmark are resampled with *shared* block indices (blocks preserve ~weekly
+  autocorrelation), giving a 90% CI on return and Sharpe plus P(strategy beats
+  the benchmark on the same resampled calendar). This quantifies how
+  path-dependent the headline number is; it does **not** detect overfitting —
+  the resamples come from the same realized returns being judged.
+- **Carry costs** — the short leg pays an annualised stock-borrow fee
+  (`--borrow-rate`, default 0.5%) and gross notional above 1x equity pays
+  margin financing (`--financing-rate`, default 5%). Without these, the
+  multi-unit ladder (up to 5 units) would run on free leverage and a free
+  short leg.
 
 Transaction costs are charged on every unit change in position. The default
 universe is hand-picked and so carries **survivorship bias** — it is a

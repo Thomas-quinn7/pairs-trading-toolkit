@@ -124,3 +124,73 @@ def test_backtest_runs_and_reports_benchmark():
     assert np.isfinite(res.bench_total_return)
     assert np.isfinite(res.bench_sharpe)
     assert len(res.df) > 0
+    # The OOS window is long enough for the paired bootstrap to run.
+    assert np.isfinite(res.p_beat_bench)
+    assert 0.0 <= res.p_beat_bench <= 1.0
+    assert res.boot_return_p5 <= res.boot_return_p95
+    assert res.boot_sharpe_p5 <= res.boot_sharpe_p95
+
+
+# --------------------------------------------------------------------------- #
+# Paired block bootstrap                                                      #
+# --------------------------------------------------------------------------- #
+def test_bootstrap_dominant_strategy_beats_benchmark():
+    rng = np.random.default_rng(10)
+    bench = rng.normal(0.0, 0.01, 252)
+    strat = bench + 0.002  # same path shape, strictly higher mean every day
+    boot = B.paired_block_bootstrap(strat, bench, n_sims=500, seed=1)
+    assert boot["p_beat_bench"] > 0.99
+    assert boot["return_p5"] <= boot["return_p50"] <= boot["return_p95"]
+
+
+def test_bootstrap_symmetric_series_near_coin_flip():
+    rng = np.random.default_rng(11)
+    a = rng.normal(0.0005, 0.01, 500)
+    b = rng.normal(0.0005, 0.01, 500)
+    boot = B.paired_block_bootstrap(a, b, n_sims=500, seed=2)
+    assert 0.2 < boot["p_beat_bench"] < 0.8
+
+
+def test_bootstrap_deterministic_and_short_series_none():
+    rng = np.random.default_rng(12)
+    a = rng.normal(0.0, 0.01, 100)
+    b = rng.normal(0.0, 0.01, 100)
+    r1 = B.paired_block_bootstrap(a, b, n_sims=200, seed=3)
+    r2 = B.paired_block_bootstrap(a, b, n_sims=200, seed=3)
+    assert r1 == r2
+    assert B.paired_block_bootstrap(a[:20], b[:20]) is None
+
+
+# --------------------------------------------------------------------------- #
+# Borrow / financing carry                                                    #
+# --------------------------------------------------------------------------- #
+def test_carry_costs_reduce_returns():
+    """Holding costs must make an actively-trading run strictly worse."""
+    panel = make_cointegrated_panel(seed=13, n=600)
+    split = panel.index[300]
+    common = dict(split_date=split.date().isoformat(), lookback_years=1,
+                  Graphs="N", save_plots=False, ignore_gate=True, entry_z=0.5)
+    free = B.backtest_pair_one_year("A", "B", panel=panel,
+                                    borrow_rate=0.0, financing_rate=0.0, **common)
+    costly = B.backtest_pair_one_year("A", "B", panel=panel,
+                                      borrow_rate=0.10, financing_rate=0.25, **common)
+    assert free.trades > 0  # the run actually held positions
+    assert costly.total_return < free.total_return
+
+
+def test_carry_costs_zero_when_flat():
+    """A pair that never trades pays no carry: results identical at any rate."""
+    rng = np.random.default_rng(14)
+    idx = pd.bdate_range("2019-01-01", periods=600)
+    # Independent random walks fail the cointegration gate -> position stays 0.
+    panel = pd.DataFrame({"A": 100 + np.cumsum(rng.standard_normal(600)),
+                          "B": 100 + np.cumsum(rng.standard_normal(600))}, index=idx)
+    split = idx[300]
+    common = dict(split_date=split.date().isoformat(), lookback_years=1,
+                  Graphs="N", save_plots=False)
+    free = B.backtest_pair_one_year("A", "B", panel=panel,
+                                    borrow_rate=0.0, financing_rate=0.0, **common)
+    costly = B.backtest_pair_one_year("A", "B", panel=panel,
+                                      borrow_rate=0.10, financing_rate=0.25, **common)
+    assert (free.df["position"] == 0).all()
+    assert costly.total_return == pytest.approx(free.total_return)

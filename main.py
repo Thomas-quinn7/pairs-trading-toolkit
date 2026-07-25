@@ -80,6 +80,10 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     ap.add_argument("--exit-z", type=float, default=0.2, help="Z-score exit threshold")
     ap.add_argument("--stop-z", type=float, default=4.5, help="Z-score stop-loss threshold")
     ap.add_argument("--tc", type=float, default=0.001, help="Transaction cost per trade (fraction)")
+    ap.add_argument("--borrow-rate", type=float, default=0.005,
+                    help="Annualised stock-borrow fee on the short leg's notional (default 0.005; 0 to disable)")
+    ap.add_argument("--financing-rate", type=float, default=0.05,
+                    help="Annualised margin financing on gross notional above 1x equity (default 0.05; 0 to disable)")
     ap.add_argument("--corr-threshold", type=float, default=0.95,
                     help="Minimum |correlation| for a pair to reach the cointegration test (default 0.95)")
     ap.add_argument("--stat-sig", type=float, default=0.01,
@@ -125,6 +129,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             exit_z=ns.exit_z,
             stop_z=ns.stop_z,
             tc=ns.tc,
+            borrow_rate=ns.borrow_rate,
+            financing_rate=ns.financing_rate,
             corr_threshold=ns.corr_threshold,
             stat_sig=ns.stat_sig,
             # Backtesting.py gates plotting on the string "Y"; pass it explicitly.
