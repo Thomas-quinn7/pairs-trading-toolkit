@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from portfolio import (  # noqa: E402
     combine_pair_returns,
+    efficient_frontier,
     max_sharpe_weights,
     pair_returns_from_results,
     perf_stats,
@@ -144,7 +145,10 @@ def test_pair_returns_from_results_roundtrip():
     """End-to-end with the real engine on a synthetic panel: the extracted
     return column must reproduce the engine's own equity curve."""
     import Backtesting as B
-    from tests.test_pairs import make_cointegrated_panel
+    # Plain module import: pytest puts this tests/ directory on sys.path for
+    # __init__-less test modules, which works on every platform; the package
+    # form ("tests.test_pairs") resolved on Linux CI but not under Windows.
+    from test_pairs import make_cointegrated_panel
 
     panel = make_cointegrated_panel(seed=11, n=600)
     split = panel.index[300]
@@ -159,3 +163,13 @@ def test_pair_returns_from_results_roundtrip():
     assert rets.shape[1] == 1
     eq_from_rets = (1.0 + rets.iloc[:, 0]).cumprod()
     assert np.allclose(eq_from_rets.values, res.df["equity"].values, atol=1e-12)
+
+
+def test_efficient_frontier_is_expost_diagnostic_and_monotone():
+    rets = make_returns_panel(seed=5)
+    fr = efficient_frontier(rets, n_points=15)
+    assert len(fr) >= 3
+    # higher target return costs more volatility (monotone up to numerical noise)
+    assert fr[-1, 0] >= fr[0, 0] - 1e-9
+    # and the docstring must keep carrying the ex-post warning
+    assert "EX-POST" in efficient_frontier.__doc__
