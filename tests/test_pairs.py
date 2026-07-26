@@ -194,3 +194,44 @@ def test_carry_costs_zero_when_flat():
                                       borrow_rate=0.10, financing_rate=0.25, **common)
     assert (free.df["position"] == 0).all()
     assert costly.total_return == pytest.approx(free.total_return)
+
+
+# --------------------------------------------------------------------------- #
+# Confirmatory cointegration checks + the half-life gate                      #
+# --------------------------------------------------------------------------- #
+def test_johansen_agrees_with_engle_granger():
+    panel = make_cointegrated_panel(seed=11)
+    res = B.johansen_coint(panel["A"], panel["B"])
+    assert res["cointegrated"]
+    assert abs(res["hedge_ratio"] - 1.5) < 0.4   # recovers roughly the true beta
+
+    rng = np.random.default_rng(12)
+    idx = pd.bdate_range("2019-01-01", periods=600)
+    x = pd.Series(100 + np.cumsum(rng.standard_normal(600)), index=idx)
+    y = pd.Series(100 + np.cumsum(rng.standard_normal(600)), index=idx)
+    assert not B.johansen_coint(x, y)["cointegrated"]
+
+
+def test_kpss_complements_adf():
+    rng = np.random.default_rng(13)
+    # stationary OU-ish series -> KPSS should NOT reject stationarity
+    z = np.zeros(1500)
+    for t in range(1, 1500):
+        z[t] = 0.9 * z[t - 1] + rng.standard_normal()
+    assert B.kpss_stationary(pd.Series(z))["stationary"]
+    # random walk -> KPSS should reject stationarity
+    rw = pd.Series(np.cumsum(rng.standard_normal(1500)))
+    assert not B.kpss_stationary(rw)["stationary"]
+
+
+def test_half_life_gate_blocks_trading():
+    """A half-life cap below the spread's actual half-life stops it trading."""
+    panel = make_cointegrated_panel(seed=7, n=600)
+    split = panel.index[300]
+    common = dict(split_date=split.date().isoformat(), lookback_years=1,
+                  Graphs="N", save_plots=False, panel=panel)
+    ungated = B.backtest_pair_one_year("A", "B", **common)
+    gated = B.backtest_pair_one_year("A", "B", max_half_life=1.0, **common)
+    assert np.isfinite(ungated.half_life) and ungated.half_life > 1.0  # gate is binding
+    assert gated.trades == 0
+    assert ungated.trades >= gated.trades

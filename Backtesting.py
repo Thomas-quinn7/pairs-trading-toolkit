@@ -71,6 +71,51 @@ def half_life(spread: pd.Series) -> float:
     return float(-np.log(2.0) / lam)
 
 
+def johansen_coint(s1: pd.Series, s2: pd.Series, det_order: int = 0,
+                   k_ar_diff: int = 1, level: str = "95") -> Dict:
+    """Johansen cointegration test on the pair (the multivariate alternative to
+    Engle-Granger). Symmetric in the two legs and eigenvalue-based, so it is a
+    useful confirmatory cross-check on the EG screen, which conditions on the
+    OLS hedge ratio and the choice of dependent leg.
+
+    Returns the trace statistic for r=0, the critical value at ``level``
+    (90/95/99), whether they imply at least one cointegrating vector, and the
+    hedge ratio read off the first cointegrating eigenvector.
+    """
+    import warnings
+    from statsmodels.tsa.vector_ar.vecm import coint_johansen
+
+    s1, s2 = s1.align(s2, join="inner")
+    data = np.column_stack([s1.astype(float).values, s2.astype(float).values])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # internal complex->real cast is benign
+        res = coint_johansen(data, det_order, k_ar_diff)
+    idx = {"90": 0, "95": 1, "99": 2}[level]
+    trace_stat = float(np.real(res.lr1[0]))
+    crit = float(np.real(res.cvt[0][idx]))
+    evec = np.real(res.evec[:, 0])
+    beta = float(-evec[1] / evec[0]) if evec[0] != 0 else float("nan")
+    return {"trace_stat": trace_stat, "crit": crit,
+            "cointegrated": trace_stat > crit, "hedge_ratio": beta}
+
+
+def kpss_stationary(series: pd.Series, level: float = 0.05) -> Dict:
+    """KPSS stationarity test. Its null is the OPPOSITE of ADF's: the null is
+    that the series IS stationary. So a p-value > ``level`` (fail to reject) is
+    evidence of stationarity - the complement to an ADF/EG rejection, and the
+    second confirmatory angle on a screened spread.
+    """
+    import warnings
+    from statsmodels.tsa.stattools import kpss
+
+    s = pd.Series(series).dropna().astype(float)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # KPSS emits an InterpolationWarning at table edges
+        stat, pvalue = kpss(s, regression="c", nlags="auto")[:2]
+    return {"stat": float(stat), "pvalue": float(pvalue),
+            "stationary": bool(pvalue > level)}
+
+
 @dataclass
 class PairCandidate:
     s1: str
@@ -251,6 +296,7 @@ def backtest_pair_one_year(
     panel: Optional[pd.DataFrame] = None,
     borrow_rate: float = 0.005,
     financing_rate: float = 0.05,
+    max_half_life: Optional[float] = None,
 ) -> BacktestResult:
     """Train on lookback ending at split_date, then test next ~252 BDays.
 
@@ -306,6 +352,10 @@ def backtest_pair_one_year(
     _spread_train = (s1_all.loc[_win_start:split] - beta * s2_all.loc[_win_start:split]).dropna()
     hl = half_life(_spread_train)
 
+    # Half-life gate: a spread whose half-life is longer than the horizon (or
+    # infinite, i.e. a random walk) won't revert in time to be tradable.
+    hl_ok = (max_half_life is None) or (np.isfinite(hl) and hl <= max_half_life)
+
     # Out-of-sample window (next ~252 BDays)
     test_idx = s1_all.index[s1_all.index > split]
     if len(test_idx) == 0:
@@ -351,7 +401,7 @@ def backtest_pair_one_year(
         z_series.append(float(z_t))
         beta_series.append(float(beta))
         # Respect gating unless ignore_gate overrides it for analysis
-        is_active = True if ignore_gate else bool(active)
+        is_active = (True if ignore_gate else bool(active)) and hl_ok
         active_series.append(is_active)
         pval_series.append(float(p_val) if p_val == p_val else np.nan)
 
@@ -602,6 +652,7 @@ def backtest_all_pairs_one_year(
     stat_sig: float = 0.01,
     borrow_rate: float = 0.005,
     financing_rate: float = 0.05,
+    max_half_life: Optional[float] = None,
 ) -> List[Tuple[PairCandidate, BacktestResult]]:
     """Scan all cointegrated pairs in-sample and OOS backtest each for ~1y.
 
@@ -655,6 +706,7 @@ def backtest_all_pairs_one_year(
                 z_step=z_step,
                 max_units=max_units,
                 debug=debug,
+                max_half_life=max_half_life,
                 ignore_gate=ignore_gate,
                 borrow_rate=borrow_rate,
                 financing_rate=financing_rate,

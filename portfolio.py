@@ -98,6 +98,36 @@ def walk_forward_max_sharpe(
     return pd.DataFrame(rows, index=rets.index, columns=rets.columns)
 
 
+def efficient_frontier(rets: pd.DataFrame, n_points: int = 25) -> np.ndarray:
+    """Long-only efficient frontier as (annualised vol, annualised return) rows.
+
+    EX-POST ANALYSIS ONLY — deliberately not a tradable allocation. The frontier
+    is fitted on the very returns it describes, i.e. it "knows" the whole period
+    in advance; optimising weights on the window you then report is look-ahead
+    in portfolio space, the exact mistake the quarantined v1 engine made in time
+    with its full-sample z-score. Its use here is as a diagnostic upper bound:
+    the gap between the causal allocations (equal / inverse-vol / walk-forward
+    max-Sharpe) and this frontier is the cost of not knowing the future.
+    """
+    from scipy.optimize import minimize
+
+    R = rets.astype(float).fillna(0.0)
+    ann = 252
+    mu = R.mean().values * ann
+    cov = R.cov().values * ann
+    n = len(mu)
+    targets = np.linspace(float(mu.min()), float(mu.max()), n_points)
+    pts = []
+    for t in targets:
+        cons = ({"type": "eq", "fun": lambda w: float(np.sum(w)) - 1.0},
+                {"type": "eq", "fun": lambda w, t=t: float(w @ mu) - t})
+        sol = minimize(lambda w: float(w @ cov @ w), np.full(n, 1.0 / n),
+                       method="SLSQP", bounds=[(0.0, 1.0)] * n, constraints=cons)
+        if sol.success:
+            pts.append((float(np.sqrt(sol.x @ cov @ sol.x)), float(t)))
+    return np.array(pts)
+
+
 def combine_pair_returns(
     rets: pd.DataFrame,
     method: str = "inverse_vol",

@@ -88,6 +88,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                     help="Minimum |correlation| for a pair to reach the cointegration test (default 0.95)")
     ap.add_argument("--stat-sig", type=float, default=0.01,
                     help="Engle-Granger p-value threshold for the in-sample screen and quarterly re-test (default 0.01)")
+    ap.add_argument("--max-half-life", type=float, default=None,
+                    help="Skip trading any pair whose training-spread OU half-life exceeds this many "
+                         "bars (default: no gate). A random walk has infinite half-life and never trades.")
     ap.add_argument("--no-graphs", action="store_true", help="Disable plotting")
     ap.add_argument("--no-save-plots", action="store_true", help="Do not write plots to charts/")
     ap.add_argument("--portfolio", action="store_true",
@@ -133,6 +136,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             financing_rate=ns.financing_rate,
             corr_threshold=ns.corr_threshold,
             stat_sig=ns.stat_sig,
+            max_half_life=ns.max_half_life,
             # Backtesting.py gates plotting on the string "Y"; pass it explicitly.
             Graphs="N" if ns.no_graphs else "Y",
             save_plots=not ns.no_save_plots,

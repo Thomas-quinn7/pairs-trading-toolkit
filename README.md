@@ -35,6 +35,14 @@ The engine (`Backtesting.py`) implements a proper Engle-Granger workflow:
   training spread is estimated (`half_life()`) and reported per pair, to justify
   the lookback and the expected holding horizon: a lookback far shorter than the
   half-life cannot see the reversion, and positions should be held on that order.
+  An optional gate (`--max-half-life`) refuses to trade any pair whose training
+  half-life exceeds the horizon — a random walk has infinite half-life and never
+  trades.
+- **Confirmatory cointegration checks** — `johansen_coint()` (eigenvalue-based,
+  symmetric in the legs — no choice of dependent variable) and
+  `kpss_stationary()` (null = stationary, the complement of ADF/EG's null =
+  unit root) are provided as cross-checks on the Engle-Granger screen. A pair
+  the EG screen admits but Johansen or KPSS contradicts deserves suspicion.
 - **Passive benchmark** — each pair's OOS result is shown against an equal-weight
   buy-and-hold of the two legs (total return and Sharpe). The strategy is
   market-neutral, so the honest question is whether it beat simply holding the
@@ -165,6 +173,12 @@ past returns, guarded by
 rate is taken as zero because the pair books are self-financing long/short —
 the legacy module's live `^IRX` fetch belonged to its buy-and-hold display,
 not the weight fit.
+
+An **ex-post efficient frontier** (`efficient_frontier()`) is also provided,
+deliberately labelled analysis-only: it is fitted on the very returns it
+describes, so it is an upper bound, not a tradable allocation. The gap between
+the causal allocations and that frontier is the honest message — the cost of
+not knowing the future.
 
 ## Charts
 
