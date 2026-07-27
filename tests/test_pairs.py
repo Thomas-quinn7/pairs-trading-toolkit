@@ -114,6 +114,30 @@ def test_no_lookahead():
     assert (res1.df.loc[up_to, "position"].values == res2.df.loc[up_to, "position"].values).all()
 
 
+def test_exit_band_hysteresis():
+    """The strategy the docs describe: enter at |z| >= entry_z, ride the
+    position through the (exit_z, entry_z) band, flat only once |z| <= exit_z.
+    Pins the fix for the dead-exit_z bug (positions used to close as soon as
+    |z| dipped below the ENTRY threshold, making the charts' exit band a lie)."""
+    panel = make_cointegrated_panel(seed=13, n=600)
+    split = panel.index[300]
+    res = B.backtest_pair_one_year("A", "B", panel=panel,
+                                   split_date=split.date().isoformat(),
+                                   lookback_years=1, Graphs="N",
+                                   save_plots=False, ignore_gate=True)
+    z = res.df["z"].values
+    p = res.df["position"].values
+    held_in_band = 0
+    for t in range(len(z) - 1):
+        if (p[t] != 0 and 0.2 < abs(z[t]) < 1.0
+                and z[t] * p[t] < 0):        # still on the entry side
+            assert p[t + 1] == p[t], f"bar {t}: band exit at |z|={abs(z[t]):.2f}"
+            held_in_band += 1
+        if abs(z[t]) <= 0.2 and p[t] != 0:
+            assert p[t + 1] == 0, f"bar {t}: not flat at |z|={abs(z[t]):.2f}"
+    assert held_in_band > 0                   # the band was actually exercised
+
+
 def test_backtest_runs_and_reports_benchmark():
     panel = make_cointegrated_panel(seed=8, n=600)
     split = panel.index[300]

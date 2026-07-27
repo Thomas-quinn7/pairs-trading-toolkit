@@ -191,10 +191,13 @@ against its passive benchmark on the same axis.
 
 ### A worked example of why the strict screen matters
 
-On the current universe (July 2025 split), the strict default screen
-(Engle-Granger p<0.01) admits **nothing** — the closest pair sits at p≈0.016.
-Relaxing to `--stat-sig 0.05` admits three pairs, and out of sample two of
-them lose 43% and 68% respectively. The pairs that "almost" pass the test are
+On the current universe (July 2025 split, data as of 2026-07-27), the strict
+default screen (Engle-Granger p<0.01) admits **nothing** — the closest pair
+sits at p≈0.023. Relaxing to `--stat-sig 0.05` admits two pairs: out of
+sample one loses 46.6% (Sharpe −1.05 vs the passive benchmark's 0.31;
+bootstrap P(beats benchmark) ≈ 6%), and the other returns +30.8% but with a
+worse Sharpe than just holding its two legs (0.95 vs 1.31, P(beats
+benchmark) ≈ 48% — a coin flip). The pairs that "almost" pass the test are
 exactly the ones the test exists to keep you out of; a no-trade year is a
 result, not a failure.
 

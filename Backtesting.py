@@ -430,17 +430,18 @@ def backtest_pair_one_year(
             desired_pos = 0
         else:
             abs_z = abs(z_t)
-            if abs_z <= exit_z or abs_z < entry_z:
-                target_units = 0
-            else:
+            if abs_z >= entry_z:
                 # 1 unit at entry threshold, then +1 per z_step beyond, capped
                 target_units = int(min(max_units, 1 + np.floor((abs_z - entry_z) / max(z_step, 1e-8))))
-
-            if z_t > entry_z:
-                desired_pos = -target_units
-            elif z_t < -entry_z:
-                desired_pos = +target_units
+                desired_pos = -target_units if z_t > 0 else +target_units
+            elif abs_z <= exit_z:
+                desired_pos = 0          # mean reversion played out: flat
+            elif pos != 0 and z_t * pos < 0:
+                desired_pos = pos        # hysteresis band: ride the open
+                                         # position until z reaches exit_z
             else:
+                # inside the band with no position (or z crossed to the other
+                # side of zero past exit_z): stay/go flat, don't open here
                 desired_pos = 0
 
             # Stop loss only closes existing positions; does not block new entries
