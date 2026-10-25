@@ -4,63 +4,63 @@
 
 A statistical-arbitrage toolkit that screens a universe of stocks for
 cointegrated pairs and backtests a mean-reversion spread strategy **out of
-sample** — trained on a lookback window and evaluated on data it never saw
+sample** - trained on a lookback window and evaluated on data it never saw
 during calibration.
 
 ## Method
 
 The engine (`Backtesting.py`) implements a proper Engle-Granger workflow:
 
-- **Hedge ratio** — OLS slope `beta` from regressing one leg on the other, so
+- **Hedge ratio** - OLS slope `beta` from regressing one leg on the other, so
   the strategy trades a beta-hedged spread `s1 - beta*s2`, not a raw price ratio.
-- **Cointegration test** — the Engle-Granger test (`statsmodels.coint`) on the
+- **Cointegration test** - the Engle-Granger test (`statsmodels.coint`) on the
   pair, not a plain ADF on the residual: because `beta` is *estimated* by OLS,
   standard Dickey-Fuller critical values are too lenient (the fit makes the
   residual look more stationary than it is); Engle-Granger/MacKinnon critical
-  values correct for that. The screen tests only the spread — the object the
-  strategy actually trades and re-validates — and the same test gates the
+  values correct for that. The screen tests only the spread - the object the
+  strategy actually trades and re-validates - and the same test gates the
   quarterly re-check. With N tickers the screen runs N(N−1)/2 tests at one
   significance level with no multiple-testing correction, so some false pairs
   will slip through by chance; the OOS re-validation is the backstop.
-- **Train/test split** — the residual mean/std used to form the z-score are
+- **Train/test split** - the residual mean/std used to form the z-score are
   estimated **only on the training window** (ending at the split date). The
   out-of-sample window runs forward from the split (~252 business days).
-- **One-bar execution lag** — a signal formed on day *t* is executed on day
+- **One-bar execution lag** - a signal formed on day *t* is executed on day
   *t+1*, so no bar trades on information from its own close.
-- **Quarterly recalibration + OOS re-validation** — each calendar quarter the
+- **Quarterly recalibration + OOS re-validation** - each calendar quarter the
   hedge ratio and residual stats are re-estimated on the trailing window and the
   Engle-Granger test is re-run; if the pair fails cointegration out of sample,
   trading is disabled for that period.
-- **Half-life of mean reversion** — the Ornstein-Uhlenbeck half-life of the
+- **Half-life of mean reversion** - the Ornstein-Uhlenbeck half-life of the
   training spread is estimated (`half_life()`) and reported per pair, to justify
   the lookback and the expected holding horizon: a lookback far shorter than the
   half-life cannot see the reversion, and positions should be held on that order.
   An optional gate (`--max-half-life`) refuses to trade any pair whose training
-  half-life exceeds the horizon — a random walk has infinite half-life and never
+  half-life exceeds the horizon - a random walk has infinite half-life and never
   trades.
-- **Confirmatory cointegration checks** — `johansen_coint()` (eigenvalue-based,
-  symmetric in the legs — no choice of dependent variable) and
+- **Confirmatory cointegration checks** - `johansen_coint()` (eigenvalue-based,
+  symmetric in the legs - no choice of dependent variable) and
   `kpss_stationary()` (null = stationary, the complement of ADF/EG's null =
   unit root) are provided as cross-checks on the Engle-Granger screen. A pair
   the EG screen admits but Johansen or KPSS contradicts deserves suspicion.
-- **Passive benchmark** — each pair's OOS result is shown against an equal-weight
+- **Passive benchmark** - each pair's OOS result is shown against an equal-weight
   buy-and-hold of the two legs (total return and Sharpe). The strategy is
   market-neutral, so the honest question is whether it beat simply holding the
   names on a risk-adjusted basis, net of costs.
-- **Paired block bootstrap** — the realized OOS daily returns of strategy and
+- **Paired block bootstrap** - the realized OOS daily returns of strategy and
   benchmark are resampled with *shared* block indices (blocks preserve ~weekly
   autocorrelation), giving a 90% CI on return and Sharpe plus P(strategy beats
   the benchmark on the same resampled calendar). This quantifies how
-  path-dependent the headline number is; it does **not** detect overfitting —
+  path-dependent the headline number is; it does **not** detect overfitting  - 
   the resamples come from the same realized returns being judged.
-- **Carry costs** — the short leg pays an annualised stock-borrow fee
+- **Carry costs** - the short leg pays an annualised stock-borrow fee
   (`--borrow-rate`, default 0.5%) and gross notional above 1x equity pays
   margin financing (`--financing-rate`, default 5%). Without these, the
   multi-unit ladder (up to 5 units) would run on free leverage and a free
   short leg.
 
 Transaction costs are charged on every unit change in position. The default
-universe is hand-picked and so carries **survivorship bias** — it is a
+universe is hand-picked and so carries **survivorship bias** - it is a
 demonstration universe, not a bias-free backtest of a live selection rule.
 
 ## Run
@@ -88,7 +88,7 @@ python main.py --corr-threshold 0.8 --stat-sig 0.05   # relax the in-sample scre
 ```
 
 If nothing passes the screen at the (deliberately strict) defaults, the run
-reports the closest candidates and their p-values and exits cleanly — an
+reports the closest candidates and their p-values and exits cleanly - an
 honest "no trade" result, not an error.
 
 Edit `tickers.txt` to change the default search universe.
@@ -107,7 +107,7 @@ python demo_lookahead.py                       # quantifies the v1 bias
 An earlier version of this repo (v1) normalised the z-score using the
 **full-sample** mean and standard deviation of the spread:
 `z = (ratio - ratio.mean()) / ratio.std()` over the *entire* history. That means
-every historical signal implicitly "knew" the future distribution of the spread —
+every historical signal implicitly "knew" the future distribution of the spread  - 
 classic **look-ahead bias**. The symptom was an in-sample Sharpe that looked far
 too good to be real; backtests that leak the future almost always do.
 
@@ -118,8 +118,8 @@ quarter so a pair that decoheres stops trading. That rebuilt engine is what
 `Backtesting.py` / `python main.py` now runs.
 
 **How big was the bias?** `demo_lookahead.py` runs the *same* mean-reversion rule
-on synthetic spreads two ways — full-sample z (v1) vs causal trailing z (the
-current engine) — and measures the Sharpe each reports:
+on synthetic spreads two ways - full-sample z (v1) vs causal trailing z (the
+current engine) - and measures the Sharpe each reports:
 
 ```
 data / persistence  full-sample   trailing        inflation
@@ -130,14 +130,14 @@ data / persistence  full-sample   trailing        inflation
 ```
 
 The look-ahead Sharpe is unearnable in real time, and the gap widens as history
-shrinks and the spread gets more persistent — exactly the regime real pairs live
-in, where the inflation is 1.8x–2.4x. The lesson is not that the number was huge
+shrinks and the spread gets more persistent - exactly the regime real pairs live
+in, where the inflation is 1.8x-2.4x. The lesson is not that the number was huge
 but that it was **invisible without the guard**: `tests/test_pairs.py::test_no_lookahead`
 now asserts the signal at time *t* is unchanged when prices after *t* are
 corrupted, so the bug cannot silently return.
 
 The flawed v1 is kept, quarantined and clearly labelled, at
-`legacy/pair_trader_v1_lookahead.py` — solely as the "before" side of this
+`legacy/pair_trader_v1_lookahead.py` - solely as the "before" side of this
 write-up. Nothing in the active pipeline imports it. Its chart output (and
 that of other retired engine versions) is archived under `legacy/charts/`;
 `charts/` holds only current-engine output.
@@ -151,33 +151,33 @@ average pairwise correlation of the pair return streams (the diversification
 evidence). A combined equity/weights chart is written to
 `charts/pairs_portfolio_oos.png`.
 
-- **equal** — 1/N, constant.
-- **inverse_vol** — weight ∝ 1/vol, where vol is the *trailing* rolling
-  standard deviation of each pair's strategy returns, **lagged one bar** — the
+- **equal** - 1/N, constant.
+- **inverse_vol** - weight ∝ 1/vol, where vol is the *trailing* rolling
+  standard deviation of each pair's strategy returns, **lagged one bar** - the
   weight applied over bar *t* is known at the close of *t−1*, so the scheme is
   causal by construction. `tests/test_portfolio.py::test_weights_are_causal`
   guards this the same way `test_no_lookahead` guards the signal.
-- **max_sharpe** — **walk-forward Markowitz**: every 21 bars, long-only
+- **max_sharpe** - **walk-forward Markowitz**: every 21 bars, long-only
   max-Sharpe weights are refitted (SLSQP, weights in [0,1] summing to 1,
   ridge-stabilised covariance) on the trailing 126 bars of pair returns
   *ending at the previous bar*, then held until the next refit. Until enough
   history exists the weights are 1/N.
 
 **Why walk-forward matters:** fitting max-Sharpe weights on the same
-out-of-sample window you then report is look-ahead at the *portfolio* level —
+out-of-sample window you then report is look-ahead at the *portfolio* level  - 
 the weight vector "knows" which pairs did well over the window it is scored
 on. That is why the legacy optimiser stayed quarantined. The walk-forward
 version removes the leak: at every bar the weights are a pure function of
 past returns, guarded by
 `tests/test_portfolio.py::test_max_sharpe_weights_are_causal`. The risk-free
-rate is taken as zero because the pair books are self-financing long/short —
+rate is taken as zero because the pair books are self-financing long/short  - 
 the legacy module's live `^IRX` fetch belonged to its buy-and-hold display,
 not the weight fit.
 
 An **ex-post efficient frontier** (`efficient_frontier()`) is also provided,
 deliberately labelled analysis-only: it is fitted on the very returns it
 describes, so it is an upper bound, not a tradable allocation. The gap between
-the causal allocations and that frontier is the honest message — the cost of
+the causal allocations and that frontier is the honest message - the cost of
 not knowing the future.
 
 ## Charts
@@ -192,16 +192,16 @@ against its passive benchmark on the same axis.
 ### A worked example of why the strict screen matters
 
 On the current universe (July 2025 split, data as of 2026-07-27), the strict
-default screen (Engle-Granger p<0.01) admits **nothing** — the closest pair
+default screen (Engle-Granger p<0.01) admits **nothing** - the closest pair
 sits at p≈0.023. Relaxing to `--stat-sig 0.05` admits two pairs: out of
 sample one loses 46.6% (Sharpe −1.05 vs the passive benchmark's 0.31;
 bootstrap P(beats benchmark) ≈ 6%), and the other returns +30.8% but with a
 worse Sharpe than just holding its two legs (0.95 vs 1.31, P(beats
-benchmark) ≈ 48% — a coin flip). The pairs that "almost" pass the test are
+benchmark) ≈ 48% - a coin flip). The pairs that "almost" pass the test are
 exactly the ones the test exists to keep you out of; a no-trade year is a
 result, not a failure.
 
 ## Note
 
-Research and learning code — not investment advice. Prices are pulled live via
+Research and learning code - not investment advice. Prices are pulled live via
 yfinance.
